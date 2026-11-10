@@ -53,6 +53,7 @@ export const MultiplayerLobbyModal: React.FC<MultiplayerLobbyModalProps> = ({
   onOpenCosmetics
 }) => {
   const [copied, setCopied] = useState(false);
+  const [copiedLink, setCopiedLink] = useState(false);
   const [joinCodeInput, setJoinCodeInput] = useState('');
   const [isJoining, setIsJoining] = useState(false);
 
@@ -62,6 +63,15 @@ export const MultiplayerLobbyModal: React.FC<MultiplayerLobbyModalProps> = ({
     setCopied(true);
     sound.playUiClick();
     setTimeout(() => setCopied(false), 2000);
+  };
+
+  const handleCopyInviteLink = () => {
+    if (!roomCode) return;
+    const url = `${window.location.origin}${window.location.pathname}?room=${roomCode}`;
+    navigator.clipboard.writeText(url);
+    setCopiedLink(true);
+    sound.playUiClick();
+    setTimeout(() => setCopiedLink(false), 2500);
   };
 
   const localChar = characters.find(c => c.id === localPlayer.characterId) || characters[0];
@@ -135,13 +145,22 @@ export const MultiplayerLobbyModal: React.FC<MultiplayerLobbyModalProps> = ({
               </div>
 
               {roomCode && (
-                <button
-                  onClick={handleCopyCode}
-                  className="flex items-center gap-1.5 px-3 py-1.5 bg-cyan-950 hover:bg-cyan-900 text-cyan-300 border border-cyan-500/40 rounded text-xs font-['Rajdhani'] font-bold uppercase transition-all"
-                >
-                  {copied ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
-                  <span>{copied ? 'COPIED!' : 'COPY CODE'}</span>
-                </button>
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={handleCopyCode}
+                    className="flex items-center gap-1.5 px-3 py-1.5 bg-cyan-950 hover:bg-cyan-900 text-cyan-300 border border-cyan-500/40 rounded text-xs font-['Rajdhani'] font-bold uppercase transition-all"
+                  >
+                    {copied ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
+                    <span>{copied ? 'COPIED!' : 'COPY CODE'}</span>
+                  </button>
+                  <button
+                    onClick={handleCopyInviteLink}
+                    className="flex items-center gap-1.5 px-3 py-1.5 bg-emerald-950/80 hover:bg-emerald-900 text-emerald-300 border border-emerald-500/40 rounded text-xs font-['Rajdhani'] font-bold uppercase transition-all"
+                  >
+                    {copiedLink ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Sparkles className="w-3.5 h-3.5 text-emerald-400" />}
+                    <span>{copiedLink ? 'LINK COPIED!' : 'INVITE LINK'}</span>
+                  </button>
+                </div>
               )}
             </div>
 

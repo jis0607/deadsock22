@@ -218,6 +218,13 @@ class NetworkManager {
     });
   }
 
+  public openCrate(crateId: number) {
+    this.send({
+      type: 'open_crate',
+      crateId
+    });
+  }
+
   public disconnect() {
     if (this.pingInterval) clearInterval(this.pingInterval);
     if (this.reconnectTimer) clearTimeout(this.reconnectTimer);

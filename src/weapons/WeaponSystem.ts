@@ -157,6 +157,47 @@ export class WeaponInventory {
     }
   }
 
+  public applyAttachments(
+    type: WeaponType,
+    opticIdx = 0,
+    barrelIdx = 0,
+    magIdx = 0
+  ) {
+    const baseDef = WEAPON_REGISTRY[type];
+    const state = this.weapons.get(type);
+    if (!state || !baseDef) return;
+
+    const modifiedDef = { ...baseDef };
+
+    // Optics modifiers
+    if (opticIdx === 1) {
+      modifiedDef.spread *= 0.8;
+    } else if (opticIdx === 2) {
+      modifiedDef.spread *= 0.65;
+      modifiedDef.range *= 1.35;
+    }
+
+    // Barrel modifiers
+    if (barrelIdx === 0) {
+      modifiedDef.recoilKick *= 0.85;
+    } else if (barrelIdx === 1) {
+      modifiedDef.recoilKick *= 0.65;
+    } else if (barrelIdx === 2) {
+      modifiedDef.range *= 1.25;
+      modifiedDef.bulletSpeed *= 1.15;
+    }
+
+    // Magazine modifiers
+    if (magIdx === 1) {
+      modifiedDef.magSize = Math.round(baseDef.magSize * 1.5);
+    } else if (magIdx === 2) {
+      modifiedDef.damage = Math.round(baseDef.damage * 1.25);
+    }
+
+    state.def = modifiedDef;
+    state.currentMag = Math.min(state.currentMag, modifiedDef.magSize);
+  }
+
   public startReload(): boolean {
     const state = this.getActiveState();
     if (state.isReloading) return false;

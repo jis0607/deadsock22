@@ -3,7 +3,7 @@ import { CharacterModel } from './CharacterModel';
 import { InputManager } from '../core/InputManager';
 import { WeaponInventory } from '../weapons/WeaponSystem';
 import { VFXSystem } from '../effects/VFXSystem';
-import { CityMap } from '../environment/CityMap';
+import { IMapEnvironment } from '../environment/IMapEnvironment';
 import { EnemyManager } from '../enemies/EnemyManager';
 import { RemnantManager } from '../remnants/RemnantManager';
 import { soundManager } from '../audio/SoundManager';
@@ -16,7 +16,7 @@ export class PlayerController {
   public input: InputManager;
   public weapons: WeaponInventory;
   public vfx: VFXSystem;
-  public map: CityMap;
+  public map: IMapEnvironment;
   public enemyManager: EnemyManager;
   public remnantManager: RemnantManager;
 
@@ -26,12 +26,34 @@ export class PlayerController {
   public yaw = 0;
   public pitch = 0;
 
-  // Stats
+  // Stats & Consumables
   public hp = 100;
   public maxHp = 100;
+  public armor = 100;
+  public maxArmor = 100;
   public stamina = 100;
   public maxStamina = 100;
   public isDead = false;
+
+  // Inventory & Consumables
+  public medkits = 2;
+  public maxMedkits = 4;
+  public armorPlates = 2;
+  public maxArmorPlates = 4;
+  public grenades = 2;
+  public maxGrenades = 4;
+
+  // Stances
+  public isGrounded = true;
+  public isCrouching = false;
+
+  // Active Throwables
+  public activeGrenades: {
+    mesh: THREE.Mesh;
+    pos: THREE.Vector3;
+    velocity: THREE.Vector3;
+    fuseTimer: number;
+  }[] = [];
 
   // Co-Op & Downed Mechanics
   public playerId: 'P1' | 'P2' = 'P1';
@@ -69,6 +91,9 @@ export class PlayerController {
   public onDamagePopup?: (worldPos: THREE.Vector3, amount: number, isHeadshot: boolean, isMelee?: boolean) => void;
   public onPerkReward?: () => void;
   public onShootFired?: (origin: THREE.Vector3, dir: THREE.Vector3, weaponId: string) => void;
+  public onDamageZombie?: (zombieId: string, damage: number, isHeadshot: boolean) => void;
+  public onSupplyCrateOpened?: (crateIndex: number) => void;
+  public onTeammateRevived?: (teammateId: 'P1' | 'P2') => void;
 
   // Temporary vectors for math
   private forward = new THREE.Vector3();
@@ -82,7 +107,7 @@ export class PlayerController {
     camera: THREE.PerspectiveCamera,
     input: InputManager,
     vfx: VFXSystem,
-    map: CityMap,
+    map: IMapEnvironment,
     enemyManager: EnemyManager,
     remnantManager: RemnantManager,
     playerId: 'P1' | 'P2' = 'P1'
@@ -103,6 +128,10 @@ export class PlayerController {
     this.resetPlayer();
   }
 
+  public setMap(map: IMapEnvironment) {
+    this.map = map;
+  }
+
   public resetPlayer(spawnPos?: THREE.Vector3) {
     const defaultPos = this.playerId === 'P2' ? new THREE.Vector3(1.8, 0, 8) : new THREE.Vector3(-1.8, 0, 8);
     this.position.copy(spawnPos || defaultPos);
@@ -110,7 +139,13 @@ export class PlayerController {
     this.yaw = 0;
     this.pitch = 0;
     this.hp = this.maxHp;
+    this.armor = this.maxArmor;
     this.stamina = this.maxStamina;
+    this.medkits = 2;
+    this.armorPlates = 2;
+    this.grenades = 2;
+    this.isGrounded = true;
+    this.isCrouching = false;
     this.isDead = false;
     this.isDowned = false;
     this.downedTimer = 30.0;
@@ -123,6 +158,12 @@ export class PlayerController {
     this.model.root.position.copy(this.position);
     this.model.root.rotation.set(0, 0, 0);
     this.weapons.refillAllAmmo();
+
+    // Clear any active grenades
+    for (const g of this.activeGrenades) {
+      this.scene.remove(g.mesh);
+    }
+    this.activeGrenades = [];
   }
 
   public update(dt: number) {
@@ -192,7 +233,23 @@ export class PlayerController {
 
     this.weapons.update(dt);
 
-    // 3. Movement Physics & Dash
+    // Consumables inputs
+    if (this.inputState.heal) {
+      this.useMedkit();
+      this.inputState.heal = false;
+    }
+    if (this.inputState.useArmor) {
+      this.useArmorPlate();
+      this.inputState.useArmor = false;
+    }
+    if (this.inputState.grenade) {
+      this.throwGrenade();
+      this.inputState.grenade = false;
+    }
+
+    this.updateGrenades(dt);
+
+    // 3. Movement Physics, Jump, Crouch & Dash
     this.updateMovement(dt);
 
     // 4. Combat / Shooting Raycast & Melee
@@ -242,6 +299,13 @@ export class PlayerController {
     // Cooldown timers
     if (this.dashCooldown > 0) this.dashCooldown -= dt;
 
+    // Crouch toggle
+    if (this.inputState.crouch) {
+      this.isCrouching = !this.isCrouching;
+      soundManager.playCrouch();
+      this.inputState.crouch = false;
+    }
+
     // Stamina recovery
     if (!this.inputState.sprint && !this.isDashing) {
       this.stamina = Math.min(this.maxStamina, this.stamina + dt * 25);
@@ -253,7 +317,6 @@ export class PlayerController {
 
     this.moveDir.set(0, 0, 0);
     if (this.inputState.hasAnalogMove) {
-      // Smooth 360-degree analog control from virtual joystick or gamepad
       this.moveDir.addScaledVector(this.forward, this.inputState.moveY);
       this.moveDir.addScaledVector(this.right, this.inputState.moveX);
     } else {
@@ -261,6 +324,20 @@ export class PlayerController {
       if (this.inputState.backward) this.moveDir.sub(this.forward);
       if (this.inputState.right) this.moveDir.add(this.right);
       if (this.inputState.left) this.moveDir.sub(this.right);
+    }
+
+    // Jump initiation
+    if (this.inputState.jump && this.isGrounded && !this.isCrouching && this.stamina >= 12 && !this.isDashing) {
+      this.velocity.y = 8.5;
+      this.isGrounded = false;
+      this.stamina -= 12;
+      soundManager.playJump();
+      this.inputState.jump = false;
+    }
+
+    // Gravity
+    if (!this.isGrounded) {
+      this.velocity.y -= 22 * dt;
     }
 
     // Dash initiation
@@ -275,13 +352,16 @@ export class PlayerController {
 
     if (this.isDashing) {
       this.dashTimer -= dt;
-      this.velocity.copy(this.dashDirection).multiplyScalar(15.0);
+      this.velocity.x = this.dashDirection.x * 15.0;
+      this.velocity.z = this.dashDirection.z * 15.0;
       if (this.dashTimer <= 0) {
         this.isDashing = false;
       }
     } else {
       let speed = 4.2; // Base walk
-      if (this.inputState.sprint && this.stamina > 5 && this.moveDir.lengthSq() > 0.01) {
+      if (this.isCrouching) {
+        speed = this.inputState.aim ? 1.5 : 2.1;
+      } else if (this.inputState.sprint && this.stamina > 5 && this.moveDir.lengthSq() > 0.01) {
         speed = 7.5;
         this.stamina -= dt * 18;
       } else if (this.inputState.aim) {
@@ -290,14 +370,29 @@ export class PlayerController {
 
       if (this.moveDir.lengthSq() > 0.01) {
         this.moveDir.normalize();
-        this.velocity.copy(this.moveDir).multiplyScalar(speed);
+        this.velocity.x = this.moveDir.x * speed;
+        this.velocity.z = this.moveDir.z * speed;
       } else {
-        this.velocity.set(0, 0, 0);
+        this.velocity.x = 0;
+        this.velocity.z = 0;
       }
     }
 
     // Apply movement & Environment Collision
-    const nextPos = this.position.clone().addScaledVector(this.velocity, dt);
+    const nextPos = this.position.clone();
+    nextPos.x += this.velocity.x * dt;
+    nextPos.z += this.velocity.z * dt;
+    nextPos.y += this.velocity.y * dt;
+
+    // Ground Landing
+    if (nextPos.y <= 0) {
+      if (!this.isGrounded && this.velocity.y < -3.0) {
+        soundManager.playLand();
+      }
+      nextPos.y = 0;
+      this.velocity.y = 0;
+      this.isGrounded = true;
+    }
 
     const collision = this.map.checkCollision(nextPos, 0.55);
     if (collision.hit) {
@@ -306,6 +401,9 @@ export class PlayerController {
 
     this.position.copy(nextPos);
     this.model.root.position.copy(this.position);
+    if (this.isCrouching) {
+      this.model.root.position.y -= 0.35;
+    }
 
     // Player faces aim yaw
     this.model.root.rotation.y = this.yaw;
@@ -451,8 +549,10 @@ export class PlayerController {
 
       // Fire Pellets / Bullets
       for (let p = 0; p < def.pellets; p++) {
-        // Apply Spread bloom
-        const spreadAmt = this.input.state.aim ? def.spread * 0.4 : def.spread;
+        // Apply Spread bloom (reduced when aiming, and 40% extra reduction when crouching)
+        let spreadAmt = this.input.state.aim ? def.spread * 0.4 : def.spread;
+        if (this.isCrouching) spreadAmt *= 0.6;
+
         const spreadDir = aimDir.clone().add(
           new THREE.Vector3(
             (Math.random() - 0.5) * spreadAmt * 2,
@@ -514,6 +614,10 @@ export class PlayerController {
           this.remnantManager.currentDamage += finalDmg;
 
           const res = this.enemyManager.damageZombie(z, finalDmg, hit.point, dir, isHeadshot, knockbackForce);
+
+          if (this.onDamageZombie) {
+            this.onDamageZombie(String(z.serverId || z.id), finalDmg, isHeadshot);
+          }
 
           if (this.onDamagePopup) {
             this.onDamagePopup(hit.point, res.damageDealt, isHeadshot, false);
@@ -619,6 +723,9 @@ export class PlayerController {
           if (this.teammate.reviveProgress >= 1.0) {
             this.teammate.revive();
             this.currentInteractPrompt = null;
+            if (this.onTeammateRevived) {
+              this.onTeammateRevived(this.teammate.playerId);
+            }
           }
           return;
         }
@@ -626,7 +733,8 @@ export class PlayerController {
     }
 
     // Check supply crates
-    for (const crate of this.map.supplyCrates) {
+    for (let cIdx = 0; cIdx < this.map.supplyCrates.length; cIdx++) {
+      const crate = this.map.supplyCrates[cIdx];
       if (!crate.opened && this.position.distanceTo(crate.position) < 2.5) {
         const label = crate.type === 'AMMO' ? 'AMMO CRATE' : crate.type === 'HEALTH' ? 'MEDICAL SUPPLY' : 'UPGRADE PROTOCOL';
         this.currentInteractPrompt = `[E / X] OPEN ${label}`;
@@ -643,6 +751,9 @@ export class PlayerController {
             this.hp = Math.min(this.maxHp, this.hp + 50);
           } else if (crate.type === 'PERK') {
             if (this.onPerkReward) this.onPerkReward();
+          }
+          if (this.onSupplyCrateOpened) {
+            this.onSupplyCrateOpened(cIdx);
           }
         };
         break;
@@ -667,6 +778,79 @@ export class PlayerController {
     }
   }
 
+  public useMedkit(): boolean {
+    if (this.medkits > 0 && this.hp < this.maxHp && !this.isDead && !this.isDowned) {
+      this.medkits--;
+      this.hp = Math.min(this.maxHp, this.hp + 60);
+      soundManager.playMedkit();
+      this.vfx.spawnImpactSparks(this.position, new THREE.Vector3(0, 1, 0), 0x00ff88);
+      return true;
+    }
+    return false;
+  }
+
+  public useArmorPlate(): boolean {
+    if (this.armorPlates > 0 && this.armor < this.maxArmor && !this.isDead && !this.isDowned) {
+      this.armorPlates--;
+      this.armor = Math.min(this.maxArmor, this.armor + 50);
+      soundManager.playArmorInsert();
+      this.vfx.spawnImpactSparks(this.position, new THREE.Vector3(0, 1, 0), 0x38bdf8);
+      return true;
+    }
+    return false;
+  }
+
+  public throwGrenade(): boolean {
+    if (this.grenades > 0 && !this.isDead && !this.isDowned) {
+      this.grenades--;
+      soundManager.playGrenadePin();
+      const aimDir = this.getAimDirection();
+      const origin = this.position.clone().add(new THREE.Vector3(0, 1.5, 0)).addScaledVector(aimDir, 0.6);
+      const vel = aimDir.clone().multiplyScalar(19).add(new THREE.Vector3(0, 4.5, 0));
+
+      const gMesh = new THREE.Mesh(
+        new THREE.SphereGeometry(0.18, 8, 8),
+        new THREE.MeshStandardMaterial({ color: 0x1e3a1e, metalness: 0.8, roughness: 0.3 })
+      );
+      gMesh.position.copy(origin);
+      this.scene.add(gMesh);
+
+      this.activeGrenades.push({
+        mesh: gMesh,
+        pos: origin,
+        velocity: vel,
+        fuseTimer: 1.6,
+      });
+      return true;
+    }
+    return false;
+  }
+
+  public updateGrenades(dt: number) {
+    for (let i = this.activeGrenades.length - 1; i >= 0; i--) {
+      const g = this.activeGrenades[i];
+      g.fuseTimer -= dt;
+
+      g.velocity.y -= 19 * dt;
+      g.pos.addScaledVector(g.velocity, dt);
+
+      if (g.pos.y <= 0.18) {
+        g.pos.y = 0.18;
+        g.velocity.y = -g.velocity.y * 0.45;
+        g.velocity.x *= 0.7;
+        g.velocity.z *= 0.7;
+      }
+
+      g.mesh.position.copy(g.pos);
+
+      if (g.fuseTimer <= 0) {
+        this.triggerExplosiveBlast(g.pos, 7.5, 450);
+        this.scene.remove(g.mesh);
+        this.activeGrenades.splice(i, 1);
+      }
+    }
+  }
+
   public takeDamage(amount: number, cause = 'Zombie Swarm') {
     if (this.isDead || this.isDashing) return; // i-frames during roll
 
@@ -682,7 +866,14 @@ export class PlayerController {
       return;
     }
 
-    this.hp = Math.max(0, this.hp - amount);
+    let remainingDmg = amount;
+    if (this.armor > 0) {
+      const absorbed = Math.min(this.armor, amount * 0.70);
+      this.armor -= absorbed;
+      remainingDmg = amount - absorbed;
+    }
+
+    this.hp = Math.max(0, this.hp - remainingDmg);
     this.cameraShake = Math.min(0.4, this.cameraShake + 0.2);
     soundManager.playPlayerHurt();
 
@@ -709,7 +900,8 @@ export class PlayerController {
 
   public revive() {
     this.isDowned = false;
-    this.hp = 45;
+    this.hp = 50;
+    this.armor = 50;
     this.downedTimer = 30.0;
     this.reviveProgress = 0;
     this.vfx.spawnBloodSplatter(this.position, new THREE.Vector3(0, 1, 0));
@@ -725,15 +917,16 @@ export class PlayerController {
     const effectivePitch = this.pitch + this.cameraRecoilPitch;
     const effectiveYaw = this.yaw + this.cameraRecoilYaw;
 
-    // Determine target offset (ADS vs Normal vs Sprint)
+    // Determine target offset (ADS vs Normal vs Sprint, with crouch height lowering)
     const isAiming = this.input.state.aim;
     const isSprinting = this.input.state.sprint && this.moveDir.lengthSq() > 0.01;
+    const eyeHeight = this.isCrouching ? 1.05 : 1.7;
 
     const targetOffset = isAiming
-      ? new THREE.Vector3(0.42, 1.62, -1.6)
+      ? new THREE.Vector3(0.42, eyeHeight - 0.08, -1.6)
       : isSprinting
-      ? new THREE.Vector3(0.8, 1.7, -3.2)
-      : new THREE.Vector3(0.65, 1.7, -2.6);
+      ? new THREE.Vector3(0.8, eyeHeight, -3.2)
+      : new THREE.Vector3(0.65, eyeHeight, -2.6);
 
     this.camOffset.lerp(targetOffset, dt * 9);
 

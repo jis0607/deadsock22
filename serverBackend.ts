@@ -34,7 +34,7 @@ export interface PlayerState {
 
 export interface ZombieState {
   id: string;
-  type: 'walker' | 'runner' | 'brute' | 'acid_spitter';
+  type: 'SHAMBLER' | 'RUNNER' | 'BRUTE' | 'SPITTER' | 'HUNTER' | 'BOSS_RECKONER';
   x: number;
   y: number;
   z: number;
@@ -44,6 +44,7 @@ export interface ZombieState {
   targetPlayerId: string | null;
   state: 'chase' | 'attack' | 'stagger' | 'dead';
   speed: number;
+  damage: number;
 }
 
 export interface Room {
@@ -52,8 +53,13 @@ export interface Room {
   status: 'lobby' | 'in_game' | 'extracted' | 'wiped';
   selectedMap: string;
   wave: number;
+  isIntermission: boolean;
+  intermissionTimer: number;
+  isExtracting: boolean;
+  extractionTimer: number;
   zombies: Map<string, ZombieState>;
   players: Map<string, { ws: WebSocket; state: PlayerState }>;
+  openedCrates: Set<number>;
   nextZombieId: number;
   lastTick: number;
   intervalTimer?: NodeJS.Timeout;
@@ -77,30 +83,94 @@ export function broadcastToRoom(room: Room, message: object, excludeWs?: WebSock
   }
 }
 
-export function spawnZombieWave(room: Room, count: number) {
-  const types: Array<'walker' | 'runner' | 'brute' | 'acid_spitter'> = ['walker', 'runner', 'walker', 'brute', 'walker'];
-  for (let i = 0; i < count; i++) {
-    const id = `z_${room.nextZombieId++}`;
-    const angle = Math.random() * Math.PI * 2;
-    const dist = 22 + Math.random() * 20;
-    const type = types[Math.floor(Math.random() * types.length)];
-    const health = type === 'brute' ? 320 : type === 'runner' ? 80 : 140;
-    const speed = type === 'runner' ? 6.5 : type === 'brute' ? 3.0 : 4.0;
+export function spawnZombieWave(room: Room, waveNum: number) {
+  room.zombies.clear();
 
-    room.zombies.set(id, {
-      id,
-      type,
-      x: Math.cos(angle) * dist,
-      y: 0,
-      z: Math.sin(angle) * dist,
-      rotY: 0,
-      health,
-      maxHealth: health,
-      targetPlayerId: null,
-      state: 'chase',
-      speed
-    });
+  if (waveNum === 1) {
+    for (let i = 0; i < 8; i++) spawnSingleZombie(room, 'SHAMBLER');
+  } else if (waveNum === 2) {
+    for (let i = 0; i < 12; i++) spawnSingleZombie(room, 'SHAMBLER');
+    for (let i = 0; i < 4; i++) spawnSingleZombie(room, 'RUNNER');
+  } else if (waveNum === 3) {
+    for (let i = 0; i < 14; i++) spawnSingleZombie(room, 'SHAMBLER');
+    for (let i = 0; i < 6; i++) spawnSingleZombie(room, 'RUNNER');
+    for (let i = 0; i < 2; i++) spawnSingleZombie(room, 'BRUTE');
+  } else if (waveNum === 4) {
+    for (let i = 0; i < 14; i++) spawnSingleZombie(room, 'SHAMBLER');
+    for (let i = 0; i < 4; i++) spawnSingleZombie(room, 'SPITTER');
+    for (let i = 0; i < 4; i++) spawnSingleZombie(room, 'HUNTER');
+  } else if (waveNum === 5) {
+    // Boss wave: Reckoner
+    spawnSingleZombie(room, 'BOSS_RECKONER', 0, -25);
+    for (let i = 0; i < 8; i++) spawnSingleZombie(room, 'RUNNER');
+  } else {
+    const total = 14 + waveNum * 4;
+    const types: Array<'SHAMBLER' | 'RUNNER' | 'BRUTE' | 'SPITTER' | 'HUNTER'> = [
+      'SHAMBLER', 'RUNNER', 'BRUTE', 'SPITTER', 'HUNTER'
+    ];
+    for (let i = 0; i < total; i++) {
+      spawnSingleZombie(room, types[Math.floor(Math.random() * types.length)]);
+    }
   }
+}
+
+function spawnSingleZombie(
+  room: Room,
+  type: 'SHAMBLER' | 'RUNNER' | 'BRUTE' | 'SPITTER' | 'HUNTER' | 'BOSS_RECKONER',
+  customX?: number,
+  customZ?: number
+) {
+  const id = `z_${room.nextZombieId++}`;
+  let x = customX;
+  let z = customZ;
+
+  if (x === undefined || z === undefined) {
+    const angle = Math.random() * Math.PI * 2;
+    const dist = 24 + Math.random() * 20;
+    x = Math.cos(angle) * dist;
+    z = Math.sin(angle) * dist;
+  }
+
+  let health = 70;
+  let speed = 2.4;
+  let damage = 18;
+
+  if (type === 'RUNNER') {
+    health = 45;
+    speed = 5.2;
+    damage = 14;
+  } else if (type === 'BRUTE') {
+    health = 420;
+    speed = 1.8;
+    damage = 45;
+  } else if (type === 'SPITTER') {
+    health = 60;
+    speed = 2.8;
+    damage = 22;
+  } else if (type === 'HUNTER') {
+    health = 55;
+    speed = 5.8;
+    damage = 25;
+  } else if (type === 'BOSS_RECKONER') {
+    health = 3800;
+    speed = 2.6;
+    damage = 60;
+  }
+
+  room.zombies.set(id, {
+    id,
+    type,
+    x,
+    y: 0,
+    z,
+    rotY: 0,
+    health,
+    maxHealth: health,
+    targetPlayerId: null,
+    state: 'chase',
+    speed,
+    damage
+  });
 }
 
 export function updateRoomZombies(room: Room, deltaSeconds: number) {
@@ -139,9 +209,9 @@ export function updateRoomZombies(room: Room, deltaSeconds: number) {
 
     if (dist > 0.1) {
       zombie.rotY = Math.atan2(dx, dz);
-      if (dist > 1.8) {
+      if (dist > 1.6) {
         zombie.state = 'chase';
-        const moveDist = Math.min(dist - 1.5, zombie.speed * deltaSeconds);
+        const moveDist = Math.min(dist - 1.4, zombie.speed * deltaSeconds);
         zombie.x += (dx / dist) * moveDist;
         zombie.z += (dz / dist) * moveDist;
       } else {
@@ -150,15 +220,28 @@ export function updateRoomZombies(room: Room, deltaSeconds: number) {
     }
   }
 
+  // Wave progression
   if (room.zombies.size > 0 && deadCount >= room.zombies.size) {
-    room.wave++;
-    const nextCount = 6 + room.wave * 4;
-    spawnZombieWave(room, nextCount);
-    broadcastToRoom(room, {
-      type: 'wave_start',
-      wave: room.wave,
-      count: nextCount
-    });
+    if (!room.isIntermission) {
+      room.isIntermission = true;
+      room.intermissionTimer = 4.0;
+      broadcastToRoom(room, {
+        type: 'wave_complete',
+        completedWave: room.wave
+      });
+    } else {
+      room.intermissionTimer -= deltaSeconds;
+      if (room.intermissionTimer <= 0) {
+        room.isIntermission = false;
+        room.wave++;
+        spawnZombieWave(room, room.wave);
+        broadcastToRoom(room, {
+          type: 'wave_start',
+          wave: room.wave,
+          zombies: Array.from(room.zombies.values())
+        });
+      }
+    }
   }
 }
 
@@ -201,8 +284,13 @@ export function setupGameBackend(httpServer: any, middlewares?: any) {
             status: 'lobby',
             selectedMap: mapId,
             wave: 1,
+            isIntermission: false,
+            intermissionTimer: 0,
+            isExtracting: false,
+            extractionTimer: 35,
             zombies: new Map(),
             players: new Map(),
+            openedCrates: new Set(),
             nextZombieId: 1,
             lastTick: Date.now()
           };
@@ -255,8 +343,13 @@ export function setupGameBackend(httpServer: any, middlewares?: any) {
           status: 'lobby',
           selectedMap: 'neon_quarantine',
           wave: 1,
+          isIntermission: false,
+          intermissionTimer: 0,
+          isExtracting: false,
+          extractionTimer: 35,
           zombies: new Map(),
           players: new Map(),
+          openedCrates: new Set(),
           nextZombieId: 1,
           lastTick: Date.now()
         };
@@ -292,8 +385,13 @@ export function setupGameBackend(httpServer: any, middlewares?: any) {
               status: 'lobby',
               selectedMap: 'neon_quarantine',
               wave: 1,
+              isIntermission: false,
+              intermissionTimer: 0,
+              isExtracting: false,
+              extractionTimer: 35,
               zombies: new Map(),
               players: new Map(),
+              openedCrates: new Set(),
               nextZombieId: 1,
               lastTick: Date.now()
             };
@@ -457,8 +555,11 @@ export function setupGameBackend(httpServer: any, middlewares?: any) {
         if (msg.type === 'start_game') {
           currentRoom.status = 'in_game';
           currentRoom.wave = 1;
+          currentRoom.isIntermission = false;
+          currentRoom.intermissionTimer = 0;
+          currentRoom.openedCrates.clear();
           currentRoom.zombies.clear();
-          spawnZombieWave(currentRoom, 10);
+          spawnZombieWave(currentRoom, 1);
 
           broadcastToRoom(currentRoom, {
             type: 'game_started',
@@ -481,15 +582,27 @@ export function setupGameBackend(httpServer: any, middlewares?: any) {
           return;
         }
 
+        if (msg.type === 'open_crate') {
+          const crateId = typeof msg.crateId === 'number' ? msg.crateId : parseInt(msg.crateId, 10);
+          currentRoom.openedCrates.add(crateId);
+          broadcastToRoom(currentRoom, {
+            type: 'crate_opened',
+            crateId,
+            openedBy: currentPlayerId
+          }, ws);
+          return;
+        }
+
         if (msg.type === 'damage_zombie') {
           const zombie = currentRoom.zombies.get(msg.zombieId);
           if (zombie && zombie.health > 0) {
             zombie.health -= msg.damage;
+            const wasBoss = zombie.type === 'BOSS_RECKONER';
             if (zombie.health <= 0) {
               zombie.health = 0;
               zombie.state = 'dead';
               playerObj.state.kills++;
-              playerObj.state.score += zombie.type === 'brute' ? 500 : 150;
+              playerObj.state.score += wasBoss ? 2500 : zombie.type === 'BRUTE' ? 500 : 150;
             }
             broadcastToRoom(currentRoom, {
               type: 'zombie_damaged',
@@ -502,6 +615,13 @@ export function setupGameBackend(httpServer: any, middlewares?: any) {
               score: playerObj.state.score,
               kills: playerObj.state.kills
             });
+
+            if (wasBoss && zombie.health <= 0) {
+              currentRoom.isExtracting = true;
+              broadcastToRoom(currentRoom, {
+                type: 'extraction_started'
+              });
+            }
           }
           return;
         }

@@ -339,6 +339,24 @@ export const MAPS: GameMap[] = [
     ],
     extractionZone: 'Helipad Alpha // Tower Pinnacle',
     accentColor: '#ef4444'
+  },
+  {
+    id: 'military_bunker',
+    name: 'MILITARY BUNKER OMEGA',
+    subtitle: 'SUBTERRANEAN COMMAND COMPLEX // BLACK OPS',
+    tier: 'TIER 3 - NIGHTMARE',
+    environment: 'Blast Doors, Containment Biolabs, Flashing Red Klaxons',
+    weather: 'Toxic Smog',
+    description: 'Deep military bioweapons research facility. Heavy blast doors and containment cylinders hold mutating bio-titans.',
+    threatLevel: 5,
+    recommendedPower: 600,
+    objectives: [
+      'Override bio-containment lock',
+      'Purge specimen outbreak',
+      'Evacuate through bunker blast shaft'
+    ],
+    extractionZone: 'Command Shaft // Blast Platform 01',
+    accentColor: '#10b981'
   }
 ];
 

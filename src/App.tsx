@@ -169,9 +169,38 @@ export default function App() {
       }
     };
 
+    engine.onDamageZombie = (zId, dmg, headshot) => {
+      if (engine.gameMode === 'ONLINE_COOP') {
+        net.damageZombie(zId, dmg, headshot);
+      }
+    };
+
+    engine.onSupplyCrateOpened = (cIdx) => {
+      if (engine.gameMode === 'ONLINE_COOP') {
+        net.openCrate(cIdx);
+      }
+    };
+
+    engine.onTeammateRevived = (tId) => {
+      if (engine.gameMode === 'ONLINE_COOP') {
+        net.sendRevive(tId);
+      }
+    };
+
     return () => {
       engine.destroy();
     };
+  }, []);
+
+  // Auto-join from URL invite parameters (?room=CODE)
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      const urlParams = new URLSearchParams(window.location.search);
+      const inviteCode = urlParams.get('room') || urlParams.get('join');
+      if (inviteCode && inviteCode.trim()) {
+        handleJoinRoom(inviteCode.toUpperCase());
+      }
+    }
   }, []);
 
   // Online Multiplayer Network Event Listeners
@@ -215,10 +244,65 @@ export default function App() {
       }
     });
 
+    const unsubBulletFired = net.on('bullet_fired', (data: unknown) => {
+      const d = data as { origin: { x: number; y: number; z: number }; direction: { x: number; y: number; z: number }; weaponId: string };
+      if (engineRef.current && engineRef.current.gameMode === 'ONLINE_COOP') {
+        engineRef.current.triggerRemotePlayerShoot(d.origin, d.direction, d.weaponId);
+      }
+    });
+
     const unsubBulletShot = net.on('bullet_shot', (data: unknown) => {
       const d = data as { origin: { x: number; y: number; z: number }; direction: { x: number; y: number; z: number }; weaponId: string };
       if (engineRef.current && engineRef.current.gameMode === 'ONLINE_COOP') {
         engineRef.current.triggerRemotePlayerShoot(d.origin, d.direction, d.weaponId);
+      }
+    });
+
+    const unsubZombieSync = net.on('zombie_sync', (data: unknown) => {
+      const d = data as { zombies: any[] };
+      if (engineRef.current && engineRef.current.gameMode === 'ONLINE_COOP') {
+        engineRef.current.syncServerZombies(d.zombies);
+      }
+    });
+
+    const unsubZombieDamaged = net.on('zombie_damaged', (data: unknown) => {
+      const d = data as {
+        zombieId: string;
+        damage: number;
+        isHeadshot: boolean;
+        remainingHealth: number;
+        state: string;
+        killedBy: string | null;
+      };
+      if (engineRef.current && engineRef.current.gameMode === 'ONLINE_COOP') {
+        engineRef.current.handleZombieDamaged(d);
+      }
+    });
+
+    const unsubWaveStart = net.on('wave_start', (data: unknown) => {
+      const d = data as { wave: number };
+      if (engineRef.current && engineRef.current.gameMode === 'ONLINE_COOP') {
+        engineRef.current.handleWaveStart(d.wave);
+      }
+    });
+
+    const unsubCrateOpened = net.on('crate_opened', (data: unknown) => {
+      const d = data as { crateId: number };
+      if (engineRef.current && engineRef.current.gameMode === 'ONLINE_COOP') {
+        engineRef.current.handleCrateOpened(d.crateId);
+      }
+    });
+
+    const unsubEcho = net.on('chrono_echo_created', (data: unknown) => {
+      const d = data as { x: number; y: number; z: number; characterId?: string };
+      if (engineRef.current && engineRef.current.gameMode === 'ONLINE_COOP') {
+        engineRef.current.handleRemoteChronoEcho(d);
+      }
+    });
+
+    const unsubExtraction = net.on('extraction_started', () => {
+      if (engineRef.current && engineRef.current.gameMode === 'ONLINE_COOP') {
+        engineRef.current.startExtractionProtocol();
       }
     });
 
@@ -268,7 +352,14 @@ export default function App() {
       unsubJoined();
       unsubPlayerJoined();
       unsubPlayerMoved();
+      unsubBulletFired();
       unsubBulletShot();
+      unsubZombieSync();
+      unsubZombieDamaged();
+      unsubWaveStart();
+      unsubCrateOpened();
+      unsubEcho();
+      unsubExtraction();
       unsubReady();
       unsubLoadout();
       unsubGameStarted();

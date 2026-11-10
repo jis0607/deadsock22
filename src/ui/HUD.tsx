@@ -742,6 +742,33 @@ export const HUD: React.FC<HUDProps> = ({ engine }) => {
                 {prompt}
               </div>
             )}
+
+            {/* Downed / Bleedout State in Fullscreen */}
+            {isDowned && !p1Dead && (
+              <div className="mt-8 px-5 py-3 rounded-sm bg-rose-950/95 border-2 border-rose-500 text-center font-mono animate-pulse shadow-2xl">
+                <div className="text-rose-400 text-sm font-black uppercase tracking-wider flex items-center justify-center gap-2">
+                  <HeartPulse className="w-5 h-5 text-rose-300 animate-ping" />
+                  OPERATIVE DOWNED // BLEEDOUT IN {downedTimer}s
+                </div>
+                <div className="text-[11px] text-rose-200 mt-1">CRAWL TO COVER // AWAIT SQUAD REVIVE</div>
+              </div>
+            )}
+
+            {/* Reviving Teammate Progress Bar */}
+            {isReviving && (
+              <div className="mt-8 w-60 bg-slate-950/95 border border-emerald-400/90 p-3 rounded-sm shadow-xl font-mono text-center">
+                <div className="text-xs font-bold text-emerald-400 uppercase tracking-wider flex items-center justify-center gap-2">
+                  <HeartPulse className="w-4 h-4 text-emerald-300 animate-pulse" />
+                  REVIVING TEAMMATE... {reviveProgress}%
+                </div>
+                <div className="w-full h-2 bg-slate-800 rounded-xs mt-2 overflow-hidden">
+                  <div
+                    className="h-full bg-emerald-400 transition-all duration-75"
+                    style={{ width: `${reviveProgress}%` }}
+                  />
+                </div>
+              </div>
+            )}
           </div>
 
           <div />

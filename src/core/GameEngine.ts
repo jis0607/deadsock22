@@ -78,6 +78,10 @@ export class GameEngine {
     health: number;
   }) => void;
   public onLocalPlayerFired?: (origin: { x: number; y: number; z: number }, dir: { x: number; y: number; z: number }, weaponId: string) => void;
+  public onDamageZombie?: (zombieId: string, damage: number, isHeadshot: boolean) => void;
+  public onSupplyCrateOpened?: (crateIndex: number) => void;
+  public onTeammateRevived?: (teammateId: 'P1' | 'P2') => void;
+  private telemetryTimer = 0;
 
   constructor(canvas: HTMLCanvasElement) {
     this.canvas = canvas;
@@ -215,6 +219,24 @@ export class GameEngine {
       }
     };
 
+    this.player.onDamageZombie = (zId, dmg, headshot) => {
+      if (this.gameMode === 'ONLINE_COOP' && this.onDamageZombie) {
+        this.onDamageZombie(zId, dmg, headshot);
+      }
+    };
+
+    this.player.onSupplyCrateOpened = (cIdx) => {
+      if (this.gameMode === 'ONLINE_COOP' && this.onSupplyCrateOpened) {
+        this.onSupplyCrateOpened(cIdx);
+      }
+    };
+
+    this.player.onTeammateRevived = (tId) => {
+      if (this.gameMode === 'ONLINE_COOP' && this.onTeammateRevived) {
+        this.onTeammateRevived(tId);
+      }
+    };
+
     this.enemyManager.onBossKilled = () => {
       this.startExtractionProtocol();
     };
@@ -314,8 +336,10 @@ export class GameEngine {
 
     if (this.onStateChange) this.onStateChange('PLAYING');
 
-    // Spawn wave 1
-    this.startWave(1);
+    // Spawn wave 1 (solo and local coop only; online coop relies on server wave)
+    if (this.gameMode !== 'ONLINE_COOP') {
+      this.startWave(1);
+    }
 
     if (!this.animFrameId) {
       this.lastTime = performance.now();
@@ -493,6 +517,31 @@ export class GameEngine {
         this.player2.update(dt);
       }
 
+      // Telemetry broadcast for ONLINE_COOP
+      this.telemetryTimer += dt;
+      if (this.telemetryTimer >= 0.04) {
+        this.telemetryTimer = 0;
+        if (this.gameMode === 'ONLINE_COOP' && this.onLocalPlayerMoved) {
+          let animState = 'idle';
+          const isMoving = this.player.input.state.forward || this.player.input.state.backward || this.player.input.state.left || this.player.input.state.right;
+          if (this.player.isDashing) animState = 'dash';
+          else if (isMoving) {
+            animState = this.player.input.state.sprint && this.player.stamina > 10 ? 'sprint' : 'run';
+          }
+          this.onLocalPlayerMoved({
+            x: this.player.position.x,
+            y: this.player.position.y,
+            z: this.player.position.z,
+            rotY: this.player.yaw,
+            pitch: this.player.pitch,
+            isAiming: this.player.input.state.aim,
+            isShooting: this.player.input.state.shoot,
+            state: this.player.isDead ? 'dead' : this.player.isDowned ? 'downed' : animState,
+            health: this.player.hp,
+          });
+        }
+      }
+
       // 4. Update Remnants Replay & Combat AI
       this.remnantManager.update(dt, matchTimeMs);
 
@@ -519,22 +568,24 @@ export class GameEngine {
       const remnantPositions = this.remnantManager.getRemnantPositions();
       this.enemyManager.update(dt, targets, remnantPositions);
 
-      // 6. Wave Progress & Intermission
-      const aliveZombies = this.enemyManager.zombies.filter(z => !z.isDead).length;
-      if (aliveZombies === 0 && !this.isWaveIntermission && !this.isExtracting) {
-        this.isWaveIntermission = true;
-        this.intermissionTimer = 4.0;
-        if (this.onWaveComplete) this.onWaveComplete(this.currentWave);
+      // 6. Wave Progress & Intermission (Solo and Local Co-op only; Server drives Online Co-op)
+      if (this.gameMode !== 'ONLINE_COOP') {
+        const aliveZombies = this.enemyManager.zombies.filter(z => !z.isDead).length;
+        if (aliveZombies === 0 && !this.isWaveIntermission && !this.isExtracting) {
+          this.isWaveIntermission = true;
+          this.intermissionTimer = 4.0;
+          if (this.onWaveComplete) this.onWaveComplete(this.currentWave);
 
-        if (this.currentWave % 2 === 0) {
-          this.triggerPerkSelection();
+          if (this.currentWave % 2 === 0) {
+            this.triggerPerkSelection();
+          }
         }
-      }
 
-      if (this.isWaveIntermission) {
-        this.intermissionTimer -= dt;
-        if (this.intermissionTimer <= 0) {
-          this.startWave(this.currentWave + 1);
+        if (this.isWaveIntermission) {
+          this.intermissionTimer -= dt;
+          if (this.intermissionTimer <= 0) {
+            this.startWave(this.currentWave + 1);
+          }
         }
       }
 
@@ -634,6 +685,45 @@ export class GameEngine {
     this.vfx.spawnMuzzleFlash(originVec, dirVec);
     this.vfx.spawnBulletTracer(originVec, originVec.clone().addScaledVector(dirVec, 45), true);
     soundManager.playRifleShot(true);
+  }
+
+  public syncServerZombies(serverZombies: any[]) {
+    this.enemyManager.syncServerZombies(serverZombies);
+  }
+
+  public handleZombieDamaged(data: {
+    zombieId: string;
+    damage: number;
+    isHeadshot: boolean;
+    remainingHealth: number;
+    state: string;
+    killedBy: string | null;
+  }) {
+    this.enemyManager.applyRemoteDamage(
+      data.zombieId,
+      data.damage,
+      data.isHeadshot,
+      data.killedBy
+    );
+  }
+
+  public handleWaveStart(waveNum: number) {
+    this.currentWave = waveNum;
+    this.isWaveIntermission = false;
+    soundManager.playZombieGroan(0.9);
+    if (this.onWaveComplete) {
+      this.onWaveComplete(waveNum);
+    }
+  }
+
+  public handleCrateOpened(crateIndex: number) {
+    this.map.openCrateByIndex(crateIndex);
+    soundManager.playReload();
+  }
+
+  public handleRemoteChronoEcho(data: { x: number; y: number; z: number; characterId?: string }) {
+    this.vfx.spawnRemnantMaterializeFX(new THREE.Vector3(data.x, data.y, data.z));
+    soundManager.playRemnantMaterialize();
   }
 
   public destroy() {

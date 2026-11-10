@@ -1,23 +1,11 @@
 import * as THREE from 'three';
+import { IMapEnvironment, CollidableBox, InteractiveSupplyCrate } from './IMapEnvironment';
 
-export interface CollidableBox {
-  min: THREE.Vector3;
-  max: THREE.Vector3;
-  type: 'wall' | 'vehicle' | 'prop' | 'barrel';
-  objectRef?: THREE.Object3D;
-  hp?: number; // for explosive barrels
-  exploded?: boolean;
-}
+export type { CollidableBox, InteractiveSupplyCrate };
 
-export interface InteractiveSupplyCrate {
-  position: THREE.Vector3;
-  mesh: THREE.Group;
-  type: 'AMMO' | 'HEALTH' | 'PERK';
-  opened: boolean;
-  colliderRef?: CollidableBox;
-}
-
-export class CityMap {
+export class CityMap implements IMapEnvironment {
+  public id = 'neon_quarantine';
+  public name = 'SECTOR 4: NEON QUARANTINE';
   public group: THREE.Group;
   public colliders: CollidableBox[] = [];
   public explosiveBarrels: { mesh: THREE.Group; pos: THREE.Vector3; hp: number; exploded: boolean }[] = [];
@@ -676,6 +664,17 @@ export class CityMap {
     });
   }
 
+  public openCrateByIndex(index: number) {
+    const crate = this.supplyCrates[index];
+    if (crate && !crate.opened) {
+      crate.opened = true;
+      crate.mesh.visible = false;
+      if (crate.colliderRef) {
+        this.removeCollider(crate.colliderRef);
+      }
+    }
+  }
+
   public removeCollider(target: CollidableBox | THREE.Object3D) {
     const idx = this.colliders.findIndex(
       (c) => c === target || (c.objectRef && c.objectRef === target)
@@ -754,5 +753,9 @@ export class CityMap {
     }
 
     return { hit, pushOut, collider: hitCollider };
+  }
+
+  public dispose() {
+    this.sceneRef.remove(this.group);
   }
 }

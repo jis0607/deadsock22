@@ -19,6 +19,11 @@ export interface InputState {
   slot5: boolean;
   toggleLighting: boolean;
   pause: boolean;
+  jump: boolean;
+  crouch: boolean;
+  grenade: boolean;
+  heal: boolean;
+  useArmor: boolean;
 
   // Analog movement for virtual joystick and gamepad
   moveX: number;
@@ -48,6 +53,11 @@ export function createEmptyInputState(): InputState {
     slot5: false,
     toggleLighting: false,
     pause: false,
+    jump: false,
+    crouch: false,
+    grenade: false,
+    heal: false,
+    useArmor: false,
     moveX: 0,
     moveY: 0,
     hasAnalogMove: false,
@@ -217,6 +227,21 @@ export class InputManager {
         break;
       case 'Space':
         this.stateP1.dash = true;
+        this.stateP1.jump = true;
+        break;
+      case 'KeyC':
+      case 'ControlLeft':
+        this.stateP1.crouch = !this.stateP1.crouch; // Toggle crouch
+        break;
+      case 'KeyG':
+        this.stateP1.grenade = true;
+        break;
+      case 'KeyH':
+        this.stateP1.heal = true;
+        break;
+      case 'KeyX':
+      case 'KeyB':
+        this.stateP1.useArmor = true;
         break;
       case 'KeyR':
         this.stateP1.reload = true;
@@ -249,6 +274,7 @@ export class InputManager {
         break;
       case 'KeyQ':
         this.stateP1.switchNext = true;
+        this.stateP1.heal = true; // Q also triggers quick heal
         break;
     }
 
@@ -357,6 +383,21 @@ export class InputManager {
         break;
       case 'Space':
         this.stateP1.dash = false;
+        this.stateP1.jump = false;
+        break;
+      case 'KeyG':
+        this.stateP1.grenade = false;
+        break;
+      case 'KeyH':
+        this.stateP1.heal = false;
+        break;
+      case 'KeyX':
+      case 'KeyB':
+        this.stateP1.useArmor = false;
+        break;
+      case 'KeyQ':
+        this.stateP1.switchNext = false;
+        this.stateP1.heal = false;
         break;
       case 'KeyR':
         this.stateP1.reload = false;

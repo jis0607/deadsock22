@@ -2,7 +2,7 @@ import * as THREE from 'three';
 import { ZombieType } from '../types/game';
 import { soundManager } from '../audio/SoundManager';
 import { VFXSystem } from '../effects/VFXSystem';
-import { CityMap } from '../environment/CityMap';
+import { IMapEnvironment } from '../environment/IMapEnvironment';
 
 export interface CombatPlayerTarget {
   id: 'P1' | 'P2';
@@ -13,7 +13,8 @@ export interface CombatPlayerTarget {
 }
 
 export interface ZombieInstance {
-  id: number;
+  id: number | string;
+  serverId?: string;
   type: ZombieType;
   group: THREE.Group;
   position: THREE.Vector3;
@@ -53,12 +54,13 @@ export interface ZombieInstance {
 export class EnemyManager {
   private scene: THREE.Scene;
   private vfx: VFXSystem;
-  private map: CityMap;
+  private map: IMapEnvironment;
   public zombies: ZombieInstance[] = [];
   private nextId = 1;
 
-  // Projectiles (for Spitters and Boss)
+  // Projectiles & Hazards (for Spitters and Boss)
   public acidProjectiles: { pos: THREE.Vector3; vel: THREE.Vector3; life: number; mesh: THREE.Mesh; damage: number }[] = [];
+  public acidPools: { pos: THREE.Vector3; radius: number; life: number; mesh: THREE.Mesh }[] = [];
 
   // Spawning pools
   private spawnLocations: THREE.Vector3[] = [
@@ -76,14 +78,18 @@ export class EnemyManager {
   public bossInstance: ZombieInstance | null = null;
   public onBossKilled?: () => void;
 
-  constructor(scene: THREE.Scene, vfx: VFXSystem, map: CityMap) {
+  constructor(scene: THREE.Scene, vfx: VFXSystem, map: IMapEnvironment) {
     this.scene = scene;
     this.vfx = vfx;
     this.map = map;
   }
 
-  public spawnZombie(type: ZombieType, customPos?: THREE.Vector3): ZombieInstance {
-    const id = this.nextId++;
+  public setMap(map: IMapEnvironment) {
+    this.map = map;
+  }
+
+  public spawnZombie(type: ZombieType, customPos?: THREE.Vector3, customId?: number | string, customHp?: number): ZombieInstance {
+    const id = customId !== undefined ? customId : this.nextId++;
     const pos = customPos ? customPos.clone() : this.getRandomSpawnPos();
 
     const group = new THREE.Group();
@@ -229,13 +235,14 @@ export class EnemyManager {
 
     const zombie: ZombieInstance = {
       id,
+      serverId: typeof id === 'string' ? id : undefined,
       type,
       group,
       position: pos,
       velocity: new THREE.Vector3(),
       rotationY: 0,
-      hp,
-      maxHp: hp,
+      hp: customHp !== undefined ? customHp : hp,
+      maxHp: customHp !== undefined ? customHp : hp,
       speed,
       damage,
       attackRange,
@@ -319,9 +326,27 @@ export class EnemyManager {
       // Check hit ground / expired
       if (proj.pos.y <= 0.1 || proj.life <= 0) {
         this.vfx.spawnSpitAcid(proj.pos, new THREE.Vector3(0, 1, 0));
+        this.spawnAcidPool(proj.pos);
         this.scene.remove(proj.mesh);
         this.acidProjectiles.splice(i, 1);
         continue;
+      }
+    }
+
+    // 1.5 Update Lingering Acid Pools
+    for (let i = this.acidPools.length - 1; i >= 0; i--) {
+      const pool = this.acidPools[i];
+      pool.life -= dt;
+      if (pool.life <= 0) {
+        this.scene.remove(pool.mesh);
+        this.acidPools.splice(i, 1);
+        continue;
+      }
+      for (const p of targets) {
+        if (!p.isDead && p.position.distanceTo(pool.pos) <= pool.radius) {
+          p.takeDamage(14 * dt);
+          this.vfx.spawnSpitAcid(p.position, new THREE.Vector3(0, 1, 0));
+        }
       }
     }
 
@@ -450,6 +475,13 @@ export class EnemyManager {
         z.group.position.copy(z.position);
       }
 
+      // Hunter zig-zag flanking maneuver
+      if (z.type === 'HUNTER' && dist > z.attackRange) {
+        const perp = new THREE.Vector3(-toTarget.z, 0, toTarget.x).normalize();
+        const flankFactor = Math.sin(z.animTimer * 5) * 0.65;
+        z.velocity.addScaledVector(perp, flankFactor * effectiveSpeed);
+      }
+
       // Attack Logic
       if (dist <= z.attackRange && z.attackTimer <= 0 && z.staggerTimer <= 0) {
         z.attackTimer = z.attackCooldown;
@@ -467,25 +499,75 @@ export class EnemyManager {
         }
       }
 
+      // Runner airborne leap attack
+      if (z.type === 'RUNNER' && dist >= 3.2 && dist <= 6.5 && z.attackTimer <= 0 && z.staggerTimer <= 0) {
+        z.attackTimer = 1.8;
+        z.velocity.add(toTarget.clone().normalize().multiplyScalar(13).add(new THREE.Vector3(0, 4.2, 0)));
+        soundManager.playZombieGroan(1.3);
+      }
+
+      // Brute ground stomp shockwave
+      if (z.type === 'BRUTE' && dist <= 3.8 && z.attackTimer <= 0 && z.staggerTimer <= 0) {
+        z.attackTimer = z.attackCooldown * 1.5;
+        soundManager.playExplosion();
+        this.vfx.spawnExplosion(z.position, 3.8);
+        for (const p of targets) {
+          if (!p.isDead && p.position.distanceTo(z.position) <= 4.8) {
+            p.takeDamage(38);
+          }
+        }
+      }
+
       // Spitter Ranged Acid Attack
       if (z.type === 'SPITTER' && dist < 22 && dist > 5 && z.attackTimer <= 0) {
         z.attackTimer = z.attackCooldown;
         this.spawnAcidBall(z.position.clone().add(new THREE.Vector3(0, 1.5, 0)), bestTarget.clone().add(new THREE.Vector3(0, 1, 0)), z.damage);
       }
 
-      // Boss special attacks
-      if (z.type === 'BOSS_RECKONER' && z.attackTimer <= 0) {
-        if (dist > 8 && Math.random() < 0.4) {
-          // Boss ground wave
+      // Boss Reckoner 3-phase AI
+      if (z.type === 'BOSS_RECKONER') {
+        const hpPct = z.hp / z.maxHp;
+        if (hpPct < 0.35 && z.speed < 4.5) {
+          // Phase 3: Enraged Titan
+          z.speed = 4.8;
+          z.attackCooldown = 0.9;
+          z.skinMat.emissive.setHex(0xff0044);
+          z.skinMat.emissiveIntensity = 0.9;
+        } else if (hpPct < 0.65 && hpPct >= 0.35 && dist > 5 && z.attackTimer <= 0) {
+          // Phase 2: Bio-barrage volley
+          z.attackTimer = z.attackCooldown * 1.5;
+          const aimDir = toTarget.clone().normalize();
+          const leftDir = aimDir.clone().applyAxisAngle(new THREE.Vector3(0, 1, 0), -0.25);
+          const rightDir = aimDir.clone().applyAxisAngle(new THREE.Vector3(0, 1, 0), 0.25);
+          this.spawnAcidBall(z.position.clone().add(new THREE.Vector3(0, 2.2, 0)), bestTarget.clone().add(new THREE.Vector3(0, 1, 0)), z.damage);
+          this.spawnAcidBall(z.position.clone().add(new THREE.Vector3(0, 2.2, 0)), bestTarget.clone().add(leftDir.multiplyScalar(4)), z.damage);
+          this.spawnAcidBall(z.position.clone().add(new THREE.Vector3(0, 2.2, 0)), bestTarget.clone().add(rightDir.multiplyScalar(4)), z.damage);
+        } else if (dist > 8 && Math.random() < 0.4 && z.attackTimer <= 0) {
+          // Phase 1: Ground wave
           z.attackTimer = z.attackCooldown;
           soundManager.playExplosion();
-          this.vfx.spawnExplosion(z.position.clone().addScaledVector(toTarget, 4), 3);
+          this.vfx.spawnExplosion(z.position.clone().addScaledVector(toTarget, 4), 3.5);
         }
       }
 
       // Procedural walking/attacking animations
       this.animateZombie(z, dt, dist <= z.attackRange);
     }
+  }
+
+  public spawnAcidPool(pos: THREE.Vector3) {
+    const geo = new THREE.CircleGeometry(2.4, 16);
+    const mat = new THREE.MeshBasicMaterial({
+      color: 0x44ff22,
+      transparent: true,
+      opacity: 0.55,
+      side: THREE.DoubleSide,
+    });
+    const mesh = new THREE.Mesh(geo, mat);
+    mesh.rotation.x = -Math.PI / 2;
+    mesh.position.set(pos.x, 0.05, pos.z);
+    this.scene.add(mesh);
+    this.acidPools.push({ pos: pos.clone(), radius: 2.4, life: 5.0, mesh });
   }
 
   private spawnAcidBall(start: THREE.Vector3, target: THREE.Vector3, dmg: number) {
@@ -551,13 +633,35 @@ export class EnemyManager {
     hitDir = new THREE.Vector3(0, 0, 1),
     isHeadshot = false,
     knockbackForce = 6.0
-  ): { killed: boolean; score: number; isHeadshot: boolean; damageDealt: number } {
-    if (zombie.isDead) return { killed: false, score: 0, isHeadshot: false, damageDealt: 0 };
+  ): { killed: boolean; score: number; isHeadshot: boolean; damageDealt: number; hitZone: 'HEAD' | 'TORSO' | 'LIMBS' } {
+    if (zombie.isDead) return { killed: false, score: 0, isHeadshot: false, damageDealt: 0, hitZone: 'TORSO' };
 
-    const finalDamage = isHeadshot ? Math.round(amount * 2.2) : Math.round(amount);
+    // Anatomical Hit Zone calculation based on hit elevation relative to zombie scale
+    const scale = zombie.type === 'BRUTE' ? 1.5 : zombie.type === 'BOSS_RECKONER' ? 2.2 : 1.0;
+    const relY = hitPos.y - zombie.position.y;
+
+    let hitZone: 'HEAD' | 'TORSO' | 'LIMBS' = 'TORSO';
+    let multiplier = 1.0;
+
+    if (relY > 1.25 * scale || isHeadshot) {
+      hitZone = 'HEAD';
+      multiplier = 2.5; // 2.5x critical multiplier for headshots
+      isHeadshot = true;
+    } else if (relY < 0.65 * scale) {
+      hitZone = 'LIMBS';
+      multiplier = 0.7; // 0.7x damage for limb shots
+      // Limb shots cripple zombie movement
+      zombie.speed = Math.max(1.2, zombie.speed * 0.7);
+      zombie.staggerTimer = 0.45;
+    } else {
+      hitZone = 'TORSO';
+      multiplier = 1.0;
+    }
+
+    const finalDamage = Math.round(amount * multiplier);
     zombie.hp -= finalDamage;
-    zombie.staggerTimer = isHeadshot ? 0.45 : 0.22;
-    zombie.flinchTimer = 0.12;
+    zombie.staggerTimer = isHeadshot ? 0.45 : hitZone === 'LIMBS' ? 0.45 : 0.22;
+    zombie.flinchTimer = 0.14;
 
     // Apply directional knockback impulse
     zombie.velocity.addScaledVector(hitDir, knockbackForce);
@@ -582,7 +686,7 @@ export class EnemyManager {
 
       // Add death momentum
       zombie.velocity.addScaledVector(hitDir, knockbackForce * 1.4);
-      return { killed: true, score: zombie.scoreValue * (isHeadshot ? 2 : 1), isHeadshot, damageDealt: finalDamage };
+      return { killed: true, score: zombie.scoreValue * (isHeadshot ? 2 : 1), isHeadshot, damageDealt: finalDamage, hitZone };
     }
 
     // Hit survived
@@ -596,7 +700,95 @@ export class EnemyManager {
       soundManager.playHitMarker(false);
     }
 
-    return { killed: false, score: 0, isHeadshot, damageDealt: finalDamage };
+    return { killed: false, score: 0, isHeadshot, damageDealt: finalDamage, hitZone };
+  }
+
+  public syncServerZombies(serverZombies: Array<{
+    id: string;
+    type: ZombieType;
+    x: number;
+    y: number;
+    z: number;
+    rotY: number;
+    health: number;
+    maxHealth: number;
+    targetPlayerId: string | null;
+    state: 'chase' | 'attack' | 'stagger' | 'dead';
+    speed: number;
+  }>) {
+    const serverMap = new Map<string, (typeof serverZombies)[0]>();
+    for (const sz of serverZombies) {
+      serverMap.set(sz.id, sz);
+    }
+
+    // 1. Update existing zombies
+    for (const z of this.zombies) {
+      const sId = z.serverId || String(z.id);
+      const sz = serverMap.get(sId);
+      if (sz) {
+        if (sz.state === 'dead' || sz.health <= 0) {
+          if (!z.isDead) {
+            z.isDead = true;
+            z.hp = 0;
+            this.vfx.spawnBloodSplatter(z.position, new THREE.Vector3(0, 1, 0), 16);
+          }
+        } else {
+          // Smoothly interpolate position & rotation
+          z.position.x = THREE.MathUtils.lerp(z.position.x, sz.x, 0.45);
+          z.position.z = THREE.MathUtils.lerp(z.position.z, sz.z, 0.45);
+          z.group.position.copy(z.position);
+          z.rotationY = sz.rotY;
+          z.group.rotation.y = sz.rotY;
+          z.hp = sz.health;
+          z.maxHp = sz.maxHealth;
+
+          // Animation
+          z.animTimer += 0.016;
+          const isAttacking = sz.state === 'attack';
+          this.animateZombie(z, 0.016, isAttacking);
+        }
+      }
+    }
+
+    // 2. Spawn missing server zombies
+    for (const sz of serverZombies) {
+      if (sz.state === 'dead' || sz.health <= 0) continue;
+      const exists = this.zombies.some(z => (z.serverId || String(z.id)) === sz.id);
+      if (!exists) {
+        const spawnPos = new THREE.Vector3(sz.x, sz.y, sz.z);
+        this.spawnZombie(sz.type, spawnPos, sz.id, sz.health);
+      }
+    }
+  }
+
+  public applyRemoteDamage(
+    zombieId: string,
+    damage: number,
+    isHeadshot: boolean,
+    killedBy: string | null
+  ) {
+    const target = this.zombies.find(z => (z.serverId || String(z.id)) === zombieId);
+    if (!target) return;
+
+    if (killedBy) {
+      target.isDead = true;
+      target.hp = 0;
+      if (isHeadshot) {
+        target.isHeadshotKilled = true;
+        target.headMesh.scale.set(0.01, 0.01, 0.01);
+        this.vfx.spawnHeadshotGore(target.position.clone().add(new THREE.Vector3(0, 1.4, 0)), new THREE.Vector3(0, 0, 1));
+        soundManager.playSkullCrunch();
+      } else {
+        this.vfx.spawnBloodSplatter(target.position, new THREE.Vector3(0, 1, 0), 22);
+        this.vfx.spawnBloodDecal(target.position);
+        soundManager.playZombieDeath();
+      }
+    } else {
+      target.hp = Math.max(0, target.hp - damage);
+      target.flinchTimer = 0.12;
+      this.vfx.spawnBloodSplatter(target.position, new THREE.Vector3(0, 1, 0), isHeadshot ? 20 : 12);
+      soundManager.playFleshImpact(isHeadshot);
+    }
   }
 
   public clearAll() {
