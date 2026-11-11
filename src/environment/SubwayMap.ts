@@ -344,8 +344,19 @@ export class SubwayMap implements IMapEnvironment {
     return box;
   }
 
-  public removeCollider(obj: THREE.Object3D) {
-    this.colliders = this.colliders.filter(c => c.objectRef !== obj);
+  public removeCollider(obj: THREE.Object3D | CollidableBox) {
+    this.colliders = this.colliders.filter(c => c !== obj && c.objectRef !== obj);
+  }
+
+  public openCrateByIndex(index: number) {
+    const crate = this.supplyCrates[index];
+    if (crate && !crate.opened) {
+      crate.opened = true;
+      crate.mesh.visible = false;
+      if (crate.colliderRef) {
+        this.removeCollider(crate.colliderRef);
+      }
+    }
   }
 
   public checkCollision(pos: THREE.Vector3, radius: number): { hit: boolean; pushOut: THREE.Vector3; collider?: CollidableBox } {

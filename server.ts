@@ -35,6 +35,21 @@ async function startServer() {
   server.listen(PORT, '0.0.0.0', () => {
     console.log(`DEAD//RECKONING Game Server listening on port ${PORT}`);
   });
+
+  const handleShutdown = (signal: string) => {
+    console.log(`[SERVER] Received ${signal}. Shutting down cleanly...`);
+    server.close(() => {
+      console.log('[SERVER] Closed all active HTTP and WebSocket listeners.');
+      process.exit(0);
+    });
+    setTimeout(() => {
+      console.warn('[SERVER] Forcing exit after shutdown timeout.');
+      process.exit(1);
+    }, 5000);
+  };
+
+  process.on('SIGTERM', () => handleShutdown('SIGTERM'));
+  process.on('SIGINT', () => handleShutdown('SIGINT'));
 }
 
 startServer();

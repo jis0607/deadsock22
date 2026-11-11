@@ -118,6 +118,7 @@ export default function App() {
   const [pingMs, setPingMs] = useState<number>(24);
   const [isReady, setIsReady] = useState<boolean>(false);
   const [remotePlayer, setRemotePlayer] = useState<PlayerData | null>(null);
+  const [netNotification, setNetNotification] = useState<{ message: string; type: 'warn' | 'info' | 'success' } | null>(null);
 
   const activeChar = CHARACTERS.find(c => c.id === selectedCharacterId) || CHARACTERS[0];
   const activeWeapon = WEAPONS.find(w => w.id === selectedWeaponId) || WEAPONS[0];
@@ -171,7 +172,7 @@ export default function App() {
 
     engine.onDamageZombie = (zId, dmg, headshot) => {
       if (engine.gameMode === 'ONLINE_COOP') {
-        net.damageZombie(zId, dmg, headshot);
+        net.damageZombie(zId, dmg, headshot, selectedWeaponId);
       }
     };
 
@@ -184,6 +185,12 @@ export default function App() {
     engine.onTeammateRevived = (tId) => {
       if (engine.gameMode === 'ONLINE_COOP') {
         net.sendRevive(tId);
+      }
+    };
+
+    engine.onExplosiveBarrelDetonated = (bIdx) => {
+      if (engine.gameMode === 'ONLINE_COOP') {
+        net.detonateBarrel(bIdx);
       }
     };
 
@@ -342,8 +349,36 @@ export default function App() {
       }
     });
 
+    const unsubBarrel = net.on('barrel_detonated', (data: unknown) => {
+      const d = data as { barrelIndex: number };
+      if (engineRef.current && engineRef.current.gameMode === 'ONLINE_COOP') {
+        engineRef.current.handleRemoteBarrelDetonation(d.barrelIndex);
+      }
+    });
+
     const unsubLeft = net.on('player_left', () => {
       setRemotePlayer(null);
+      setNetNotification({ message: 'OPERATIVE DISCONNECTED (SESSION EXPIRED)', type: 'warn' });
+      setTimeout(() => setNetNotification(null), 4500);
+    });
+
+    const unsubPlayerDisconnected = net.on('player_disconnected', () => {
+      setNetNotification({ message: 'OPERATIVE CONNECTION LOST — 30s RECONNECT WINDOW ACTIVE', type: 'warn' });
+    });
+
+    const unsubPlayerReconnected = net.on('player_reconnected', () => {
+      sound.playUiClick();
+      setNetNotification({ message: 'OPERATIVE RECONNECTED // SQUAD LINK RESTORED', type: 'success' });
+      setTimeout(() => setNetNotification(null), 3500);
+    });
+
+    const unsubHostMigrated = net.on('host_migrated', (data: unknown) => {
+      const d = data as { newHostId: string };
+      if (d.newHostId === net.myPlayerId) {
+        setIsHost(true);
+        setNetNotification({ message: 'HOST MIGRATED — YOU ARE SQUAD LEADER', type: 'info' });
+        setTimeout(() => setNetNotification(null), 4000);
+      }
     });
 
     return () => {
@@ -358,6 +393,7 @@ export default function App() {
       unsubZombieDamaged();
       unsubWaveStart();
       unsubCrateOpened();
+      unsubBarrel();
       unsubEcho();
       unsubExtraction();
       unsubReady();
@@ -365,6 +401,9 @@ export default function App() {
       unsubGameStarted();
       unsubRevived();
       unsubLeft();
+      unsubPlayerDisconnected();
+      unsubPlayerReconnected();
+      unsubHostMigrated();
     };
   }, [selectedCharacterId, selectedWeaponId]);
 
@@ -662,6 +701,22 @@ export default function App() {
           engine={engineRef.current}
           onClose={() => setActiveModal(null)}
         />
+      )}
+
+      {/* Network Alert Notification Banner */}
+      {netNotification && (
+        <div className="fixed top-14 left-1/2 -translate-x-1/2 z-[70] pointer-events-none animate-fadeIn">
+          <div className={`px-4 py-2 rounded border font-mono text-xs font-bold tracking-widest uppercase shadow-2xl backdrop-blur-md flex items-center gap-2 ${
+            netNotification.type === 'warn'
+              ? 'bg-amber-950/90 border-amber-500 text-amber-200'
+              : netNotification.type === 'success'
+              ? 'bg-emerald-950/90 border-emerald-500 text-emerald-200'
+              : 'bg-cyan-950/90 border-cyan-500 text-cyan-200'
+          }`}>
+            <span className="w-2 h-2 rounded-full animate-ping bg-current" />
+            {netNotification.message}
+          </div>
+        </div>
       )}
 
       {/* ========================================================================= */}

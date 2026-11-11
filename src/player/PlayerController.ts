@@ -94,6 +94,7 @@ export class PlayerController {
   public onDamageZombie?: (zombieId: string, damage: number, isHeadshot: boolean) => void;
   public onSupplyCrateOpened?: (crateIndex: number) => void;
   public onTeammateRevived?: (teammateId: 'P1' | 'P2') => void;
+  public onExplosiveBarrelDetonated?: (barrelIndex: number) => void;
 
   // Temporary vectors for math
   private forward = new THREE.Vector3();
@@ -660,11 +661,27 @@ export class PlayerController {
     this.vfx.spawnBulletTracer(start, hitPoint, false, isExplosive ? 0x8b5cf6 : 0xffe688);
   }
 
-  private detonateBarrel(barrel: CityMap['explosiveBarrels'][0]) {
+  public detonateBarrel(barrel: IMapEnvironment['explosiveBarrels'][0]) {
+    if (barrel.exploded) return;
     barrel.exploded = true;
     barrel.mesh.visible = false;
     this.map.removeCollider(barrel.mesh);
     this.triggerExplosiveBlast(barrel.pos, 7.0, 320);
+
+    const bIdx = this.map.explosiveBarrels.indexOf(barrel);
+    if (bIdx !== -1 && this.onExplosiveBarrelDetonated) {
+      this.onExplosiveBarrelDetonated(bIdx);
+    }
+  }
+
+  public detonateBarrelByIndex(index: number) {
+    const barrel = this.map.explosiveBarrels[index];
+    if (barrel && !barrel.exploded) {
+      barrel.exploded = true;
+      barrel.mesh.visible = false;
+      this.map.removeCollider(barrel.mesh);
+      this.triggerExplosiveBlast(barrel.pos, 7.0, 320);
+    }
   }
 
   private triggerExplosiveBlast(pos: THREE.Vector3, radius: number, maxDmg: number) {

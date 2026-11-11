@@ -33,6 +33,7 @@ export interface IMapEnvironment {
   deactivateExtraction(): void;
   isPlayerInExtractionZone(pos: THREE.Vector3, zoneRadius?: number): boolean;
   checkCollision(pos: THREE.Vector3, radius: number): { hit: boolean; pushOut: THREE.Vector3; collider?: CollidableBox };
-  removeCollider(obj: THREE.Object3D): void;
+  removeCollider(obj: THREE.Object3D | CollidableBox): void;
+  openCrateByIndex?(index: number): void;
   dispose(): void;
 }

@@ -81,6 +81,7 @@ export class GameEngine {
   public onDamageZombie?: (zombieId: string, damage: number, isHeadshot: boolean) => void;
   public onSupplyCrateOpened?: (crateIndex: number) => void;
   public onTeammateRevived?: (teammateId: 'P1' | 'P2') => void;
+  public onExplosiveBarrelDetonated?: (barrelIndex: number) => void;
   private telemetryTimer = 0;
 
   constructor(canvas: HTMLCanvasElement) {
@@ -234,6 +235,12 @@ export class GameEngine {
     this.player.onTeammateRevived = (tId) => {
       if (this.gameMode === 'ONLINE_COOP' && this.onTeammateRevived) {
         this.onTeammateRevived(tId);
+      }
+    };
+
+    this.player.onExplosiveBarrelDetonated = (bIdx) => {
+      if (this.gameMode === 'ONLINE_COOP' && this.onExplosiveBarrelDetonated) {
+        this.onExplosiveBarrelDetonated(bIdx);
       }
     };
 
@@ -592,7 +599,7 @@ export class GameEngine {
       // 7. Extraction Protocol Countdown with Zone Validation
       if (this.isExtracting) {
         const inZone1 = !this.player.isDead && this.map.isPlayerInExtractionZone(this.player.position, 6.5);
-        const inZone2 = this.gameMode === 'LOCAL_COOP' && this.player2 && !this.player2.isDead && this.map.isPlayerInExtractionZone(this.player2.position, 6.5);
+        const inZone2 = (this.gameMode === 'LOCAL_COOP' || this.gameMode === 'ONLINE_COOP') && this.player2 && !this.player2.isDead && this.map.isPlayerInExtractionZone(this.player2.position, 6.5);
         const anyInZone = inZone1 || inZone2;
         this.isInExtractionZone = !!anyInZone;
 
@@ -719,6 +726,10 @@ export class GameEngine {
   public handleCrateOpened(crateIndex: number) {
     this.map.openCrateByIndex(crateIndex);
     soundManager.playReload();
+  }
+
+  public handleRemoteBarrelDetonation(barrelIndex: number) {
+    this.player.detonateBarrelByIndex(barrelIndex);
   }
 
   public handleRemoteChronoEcho(data: { x: number; y: number; z: number; characterId?: string }) {

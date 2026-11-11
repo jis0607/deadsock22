@@ -1,4 +1,4 @@
-import { PlayerData, ZombieEntity, PlayerCosmeticLoadout } from '../types/game';
+import { PlayerData, PlayerCosmeticLoadout } from '../types/game';
 
 export type NetEventHandler = (data: unknown) => void;
 
@@ -6,11 +6,38 @@ class NetworkManager {
   private ws: WebSocket | null = null;
   private handlers = new Map<string, Set<NetEventHandler>>();
   private reconnectTimer: NodeJS.Timeout | null = null;
+  private pingInterval: NodeJS.Timeout | null = null;
+  private lastConnectParams: {
+    roomCode: string;
+    playerName: string;
+    characterId: string;
+    weaponId: string;
+    cosmetics?: PlayerCosmeticLoadout;
+  } | null = null;
+  private reconnectAttempts = 0;
+
   public isConnected: boolean = false;
   public roomCode: string | null = null;
   public myPlayerId: string | null = null;
   public isHost: boolean = false;
   public pingMs: number = 24;
+
+  constructor() {
+    if (typeof window !== 'undefined') {
+      try {
+        const saved = sessionStorage.getItem('dr_coop_player_id');
+        if (saved) {
+          this.myPlayerId = saved;
+        } else {
+          const generated = `p_${Date.now()}_${Math.floor(100 + Math.random() * 900)}`;
+          sessionStorage.setItem('dr_coop_player_id', generated);
+          this.myPlayerId = generated;
+        }
+      } catch {
+        this.myPlayerId = `p_${Date.now()}`;
+      }
+    }
+  }
 
   public on(event: string, handler: NetEventHandler) {
     if (!this.handlers.has(event)) {
@@ -54,12 +81,12 @@ class NetworkManager {
     return { roomCode: data.roomCode, isHost: data.isHost };
   }
 
-  public async checkRoom(code: string): Promise<{ exists: boolean; playerCount: number; status: string }> {
+  public async checkRoom(code: string): Promise<{ exists: boolean; playerCount: number; activePlayerCount?: number; status: string }> {
     try {
       const res = await fetch(`/api/rooms/${code}`);
       if (!res.ok) return { exists: false, playerCount: 0, status: 'none' };
       const data = await res.json();
-      return { exists: data.exists, playerCount: data.playerCount, status: data.status };
+      return { exists: data.exists, playerCount: data.playerCount, activePlayerCount: data.activePlayerCount, status: data.status };
     } catch {
       return { exists: false, playerCount: 0, status: 'none' };
     }
@@ -72,8 +99,14 @@ class NetworkManager {
     weaponId: string;
     cosmetics?: PlayerCosmeticLoadout;
   }) {
+    this.lastConnectParams = { ...params };
+
     if (this.ws) {
-      this.ws.close();
+      try {
+        this.ws.close();
+      } catch {
+        // ignore
+      }
       this.ws = null;
     }
 
@@ -85,9 +118,10 @@ class NetworkManager {
 
     this.ws.onopen = () => {
       this.isConnected = true;
-      this.emit('connection_changed', { connected: true });
+      this.reconnectAttempts = 0;
+      this.emit('connection_changed', { connected: true, isReconnected: false });
 
-      // Send join message
+      // Join room message with persistent playerId
       this.send({
         type: 'join_room',
         roomCode: this.roomCode,
@@ -98,19 +132,29 @@ class NetworkManager {
         cosmetics: params.cosmetics
       });
 
-      // Ping interval
       this.startPingLoop();
     };
 
     this.ws.onmessage = (event) => {
       try {
         const msg = JSON.parse(event.data);
-        if (msg.type === 'room_joined') {
+        if (msg.type === 'room_joined' || msg.type === 'room_reconnected') {
           this.roomCode = msg.roomCode;
           this.myPlayerId = msg.playerId;
           this.isHost = msg.isHost;
+          if (typeof window !== 'undefined' && msg.playerId) {
+            try {
+              sessionStorage.setItem('dr_coop_player_id', msg.playerId);
+            } catch {
+              // ignore
+            }
+          }
+        } else if (msg.type === 'host_migrated') {
+          if (msg.newHostId === this.myPlayerId) {
+            this.isHost = true;
+          }
         } else if (msg.type === 'pong') {
-          this.pingMs = Math.max(12, Date.now() - msg.timestamp);
+          this.pingMs = Math.max(8, Date.now() - msg.timestamp);
           this.emit('ping_updated', { ping: this.pingMs });
           return;
         }
@@ -120,9 +164,21 @@ class NetworkManager {
       }
     };
 
-    this.ws.onclose = () => {
+    this.ws.onclose = (event) => {
       this.isConnected = false;
-      this.emit('connection_changed', { connected: false });
+      this.emit('connection_changed', { connected: false, wasClean: event.wasClean });
+
+      // Auto-reconnect handling if connection drops while in a room
+      if (this.lastConnectParams && this.reconnectAttempts < 5) {
+        this.reconnectAttempts++;
+        const backoffMs = Math.min(8000, 1000 * Math.pow(1.5, this.reconnectAttempts));
+        if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
+        this.reconnectTimer = setTimeout(() => {
+          if (this.lastConnectParams && !this.isConnected) {
+            this.connectToRoom(this.lastConnectParams);
+          }
+        }, backoffMs);
+      }
     };
 
     this.ws.onerror = (err) => {
@@ -130,14 +186,13 @@ class NetworkManager {
     };
   }
 
-  private pingInterval: NodeJS.Timeout | null = null;
   private startPingLoop() {
     if (this.pingInterval) clearInterval(this.pingInterval);
     this.pingInterval = setInterval(() => {
       if (this.ws && this.ws.readyState === WebSocket.OPEN) {
         this.send({ type: 'ping', timestamp: Date.now() });
       }
-    }, 4000);
+    }, 3000);
   }
 
   public send(payload: object) {
@@ -193,12 +248,13 @@ class NetworkManager {
     });
   }
 
-  public damageZombie(zombieId: string, damage: number, isHeadshot: boolean) {
+  public damageZombie(zombieId: string, damage: number, isHeadshot: boolean, weaponId?: string) {
     this.send({
       type: 'damage_zombie',
       zombieId,
       damage,
-      isHeadshot
+      isHeadshot,
+      weaponId
     });
   }
 
@@ -225,7 +281,16 @@ class NetworkManager {
     });
   }
 
+  public detonateBarrel(barrelIndex: number) {
+    this.send({
+      type: 'detonate_barrel',
+      barrelIndex
+    });
+  }
+
   public disconnect() {
+    this.lastConnectParams = null;
+    this.reconnectAttempts = 0;
     if (this.pingInterval) clearInterval(this.pingInterval);
     if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
     if (this.ws) {
@@ -234,7 +299,6 @@ class NetworkManager {
     }
     this.isConnected = false;
     this.roomCode = null;
-    this.myPlayerId = null;
     this.isHost = false;
   }
 }
